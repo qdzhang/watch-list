@@ -18,16 +18,27 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # 关闭对模型修改的
 db = SQLAlchemy(app)
 
 
+@app.context_processor
+def inject_user():
+    user = User.query.first()
+    return dict(user=user)
+
+
 @app.route('/')
 def index():
-    user = User.query.first()
     movies = Movie.query.all()
-    return render_template('index.html', user=user, movies=movies)
+    return render_template('index.html', movies=movies)
 
 
 @app.route("/user/<name>")
 def user_page(name):
     return 'Users: %s' % name
+
+
+@app.errorhandler(404)
+def page_not_found(e):  # 接受异常对象作为参数
+    user = User.query.first()
+    return render_template('404.html'), 404
 
 
 class User(db.Model):  # 表名将会是 user（自动生成，小写处理）
