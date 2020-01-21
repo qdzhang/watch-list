@@ -3,6 +3,8 @@ import sys
 from flask import Flask, render_template
 from flask import url_for, request, redirect, flash
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import click
 
 WIN = sys.platform.startswith('win')
@@ -28,6 +30,8 @@ def inject_user():
 def index():
     app.config['SECRET_KEY'] = 'dev'
     if request.method == 'POST':
+        if not current_user.is_authenticated:
+            return redirect(url_for('index'))
         title = request.form.get('title')
         year = request.form.get('year')
         if not title or not year or len(year) > 4 or len(title) > 60:
@@ -44,6 +48,7 @@ def index():
 
 
 @app.route('/movie/edit/<int:movie_id>', methods=['GET', 'POST'])
+@login_required
 def edit(movie_id):
     movie = Movie.query.get_or_404(movie_id)
 
@@ -66,6 +71,7 @@ def edit(movie_id):
 
 
 @app.route('/movie/delete/<int:movie_id>', methods=['POST'])
+@login_required
 def delete(movie_id):
     movie = Movie.query.get_or_404(movie_id)
     db.session.delete(movie)
@@ -74,9 +80,60 @@ def delete(movie_id):
     return redirect(url_for('index'))
 
 
-@app.route("/user/<name>")
+@app.route('/user/<name>')
 def user_page(name):
     return 'Users: %s' % name
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+
+        if not username or not password:
+            flash('Invalid input.')
+            return redirect(url_for('login'))
+
+        user = User.query.first()
+        # 验证用户名和密码是否一致
+        if username == user.username and user.validate_password(password):
+            # 验证成功
+            login_user(user)
+            flash('Login sucess.')
+            return redirect(url_for('index'))
+
+        # 验证失败
+        flash('Invalid username or password.')
+        return redirect(url_for('login'))
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+@login_required  # 视图保护
+def logout():
+    logout_user()
+    flash('Goodbye.')
+    return redirect(url_for('index'))
+
+
+@app.route('/setting', methods=['GET', 'POST'])
+@login_required
+def settings():
+    if request.method == 'POST':
+        name = request.form['name']
+
+        if not name or len(name) > 20:
+            flash('Invalid input.')
+            return redirect(url_for('settings'))
+
+        current_user.name = name
+        db.session.commit()
+        flash('Setting update.')
+        return redirect(url_for('index'))
+
+    return render_template('settings.html')
 
 
 @app.errorhandler(404)
@@ -85,9 +142,17 @@ def page_not_found(e):  # 接受异常对象作为参数
     return render_template('404.html'), 404
 
 
-class User(db.Model):  # 表名将会是 user（自动生成，小写处理）
+class User(db.Model, UserMixin):  # 表名将会是 user（自动生成，小写处理）
     id = db.Column(db.Integer, primary_key=True)  # 主键
     name = db.Column(db.String(20))  # 名字
+    username = db.Column(db.String(20))  # 用户名
+    password_hash = db.Column(db.String(128))  # 密码散列值
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def validate_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 
 class Movie(db.Model):  # 表名将会是 movie
@@ -95,6 +160,14 @@ class Movie(db.Model):  # 表名将会是 movie
     title = db.Column(db.String(60))  # 电影标题
     year = db.Column(db.String(4))  # 电影年份
 
+
+login_manager = LoginManager(app)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    user = User.query.get(int(user_id))
+    return user
 
 # 命令行函数
 @app.cli.command()
@@ -134,3 +207,26 @@ def forge():
 
     db.session.commit()
     click.echo('Done.')
+
+
+@app.cli.command()
+@click.option('--username', prompt=True, help='The username usedto login.')
+@click.option('--password', prompt=True, hide_input=True,
+              confirmation_prompt=True, help='The password used to login.')
+def admin(username, password):
+    """Create user."""
+    db.create_all()
+
+    user = User.query.first()
+    if user is not None:
+        click.echo('Updating user...')
+        user.username = username
+        user.set_password(password)
+    else:
+        click.echo('Creating user...')
+        user = User(username=username, name='Admin')
+        user.set_password(password)
+        db.session.add(user)
+
+    db.session.commit()
+    click.echo('Done')
